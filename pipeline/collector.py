@@ -8,6 +8,7 @@ Purpose: asyncio + httpx를 활용한 다중 비동기 API 수집 및 오프라�
 
 from __future__ import annotations
 
+import asyncio # 빠져있던 import 추가
 import json
 from pathlib import Path
 from typing import Any, Dict, List
