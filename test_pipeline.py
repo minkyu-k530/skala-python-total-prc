@@ -3,63 +3,160 @@ Date: 03AUG2026
 Author: 정민규 (Minkyu Jung)
 SNumber: P062
 
-Purpose: pytest를 활용한 Pydantic 데이터 모델 유효성 검증 단위 테스트.
+Purpose: pytest를 활용하여 API별 Pydantic 모델의
+정상값, 타입 오류, 범위 오류를 검증한다.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo  # 추가
+
 import pytest
 from pydantic import ValidationError
 
-from pipeline.model import RecordModel
+from pipeline.model import (
+    CountryRecord,
+    IpLocationRecord,
+    WeatherRecord,
+    validate_weather,
+)
 
 
-def test_record_model_valid() -> None:
-    """정상적인 데이터가 주어졌을 때 Pydantic 모델이 올바르게 생성되는지 테스트"""
-    valid_data = {
-        "id": 1,
-        "name": "Test Item",
-        "value": 25.5
+def make_valid_weather(
+    **changes: object,
+) -> dict[str, object]:
+    """정상 날씨 데이터에서 필요한 값만 변경해 반환한다."""
+
+    weather_data: dict[str, object] = {
+    "city": "Seoul",
+    "timestamp": datetime(
+        2026,
+        8,
+        3,
+        9,
+        0,
+        tzinfo=ZoneInfo("Asia/Seoul"),
+    ),
+    "temperature_c": 28.5,
+    "precipitation_probability": 40,
+    "latitude": 37.55,
+    "longitude": 127.0,
+    "timezone": "Asia/Seoul",
     }
-    record = RecordModel.model_validate(valid_data)
-    
-    assert record.id == 1
-    assert record.name == "Test Item"
-    assert record.value == 25.5
+
+    weather_data.update(changes)
+
+    return weather_data
 
 
-def test_record_model_invalid_value_range() -> None:
-    """value 값이 0보다 작을 때(음수) ValidationError가 발생하는지 테스트"""
-    invalid_data = {
-        "id": 2,
-        "name": "Negative Item",
-        "value": -5.0  # ge == 0 조건 위반
-    }
-    
+def test_weather_record_valid() -> None:
+    """정상 범위의 날씨 데이터는 검증을 통과해야 한다."""
+
+    record = WeatherRecord(
+        **make_valid_weather()
+    )
+
+    assert record.city == "Seoul"
+    assert record.temperature_c == 28.5
+    assert record.precipitation_probability == 40
+    assert record.timezone == "Asia/Seoul"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("temperature_c", 80.0),
+        ("precipitation_probability", 101),
+        ("latitude", -91.0),
+    ],
+)
+def test_weather_record_rejects_out_of_range_value(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    """온도, 강수확률, 위도가 허용 범위를 벗어나면 실패해야 한다."""
+
+    invalid_weather = make_valid_weather(
+        **{field_name: invalid_value}
+    )
+
     with pytest.raises(ValidationError):
-        RecordModel.model_validate(invalid_data)
+        WeatherRecord(**invalid_weather)
 
 
-def test_record_model_invalid_type() -> None:
-    """필수 필드의 타입이 잘못되었거나 누락되었을 때 ValidationError가 발생하는지 테스트"""
-    # id에 정수로 변환될 수 없는 문자열 전달
-    invalid_data = {
-        "id": "not-an-integer",
-        "name": "Type Error Item",
-        "value": 10.0
-    }
-    
+def test_weather_record_rejects_invalid_type() -> None:
+    """strict 모드에서는 숫자 문자열을 실수로 변환하지 않아야 한다."""
+
+    invalid_weather = make_valid_weather(
+        temperature_c="28.5"
+    )
+
     with pytest.raises(ValidationError):
-        RecordModel.model_validate(invalid_data)
+        WeatherRecord(**invalid_weather)
 
 
-def test_record_model_empty_name() -> None:
-    """name 필드가 빈 문자열이거나 공백일 때 커스텀 검증에 걸리는지 테스트"""
-    invalid_data = {
-        "id": 3,
-        "name": "   ",  # 공백만 있는 경우
-        "value": 15.0
-    }
-    
+def test_country_record_rejects_negative_population() -> None:
+    """국가 인구가 음수이면 검증에 실패해야 한다."""
+
     with pytest.raises(ValidationError):
-        RecordModel.model_validate(invalid_data)
+        CountryRecord(
+            name="Korea (Republic of)",
+            native_name="대한민국",
+            alpha2_code="KR",
+            alpha3_code="KOR",
+            capital="Seoul",
+            region="Asia",
+            subregion="Eastern Asia",
+            population=-1,
+            area_km2=100_210.0,
+            latitude=37.0,
+            longitude=127.5,
+        )
+
+
+def test_ip_location_rejects_failure_status() -> None:
+    """ip-api의 실패 응답을 정상 위치 정보로 처리하지 않아야 한다."""
+
+    with pytest.raises(ValidationError):
+        IpLocationRecord(
+            status="fail",
+            query="8.8.8.8",
+            country="United States",
+            country_code="US",
+            region_name="Virginia",
+            city="Ashburn",
+            latitude=39.03,
+            longitude=-77.5,
+            timezone="America/New_York",
+            isp="Google LLC",
+        )
+
+
+def test_weather_parallel_arrays_must_have_same_length() -> None:
+    """Open-Meteo의 시간·기온·강수확률 배열 길이는 같아야 한다."""
+
+    invalid_payload = {
+        "latitude": 37.55,
+        "longitude": 127.0,
+        "timezone": "Asia/Seoul",
+        "hourly": {
+            "time": [
+                "2026-08-03T00:00",
+                "2026-08-03T01:00",
+            ],
+            "temperature_2m": [
+                28.0,
+            ],
+            "precipitation_probability": [
+                10,
+                20,
+            ],
+        },
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="배열 길이",
+    ):
+        validate_weather(invalid_payload)
